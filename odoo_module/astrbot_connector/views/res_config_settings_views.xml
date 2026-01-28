@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_astrbot" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.astrbot</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="AstrBot" string="AstrBot" name="astrbot_connector" groups="base.group_system">
+                    <block title="AstrBot AI Assistant" name="astrbot_settings">
+                        <setting id="astrbot_enabled_setting" string="Enable AstrBot" help="Enable AI assistant integration in Discuss">
+                            <field name="astrbot_enabled"/>
+                            <div class="mt8" invisible="not astrbot_enabled">
+                                <button name="action_open_astrbot_chat" type="object" string="Open Chat with AstrBot" class="btn-primary" icon="fa-comments"/>
+                            </div>
+                        </setting>
+                        <setting id="astrbot_webhook_setting" string="Webhook URL" help="AstrBot webhook URL (copy from AstrBot platform settings)" invisible="not astrbot_enabled">
+                            <field name="astrbot_webhook_url" placeholder="http://localhost:6185/api/platform/webhook/{uuid}"/>
+                            <div class="text-muted">
+                                Format: http://your-astrbot-server:6185/api/platform/webhook/{your-webhook-uuid}
+                            </div>
+                        </setting>
+                        <setting id="astrbot_api_key_setting" string="API Key" help="Authentication key (optional, must match AstrBot config)" invisible="not astrbot_enabled">
+                            <field name="astrbot_api_key" password="True"/>
+                        </setting>
+                        <setting id="astrbot_bot_name_setting" string="Bot Name" help="Display name of the bot in conversations" invisible="not astrbot_enabled">
+                            <field name="astrbot_bot_name" placeholder="AstrBot"/>
+                        </setting>
+                    </block>
+                    <block title="Connection Test" name="astrbot_test" invisible="not astrbot_enabled">
+                        <setting id="astrbot_test_setting" string="Test Connection" help="Test the connection to AstrBot server">
+                            <div class="d-flex gap-2 flex-wrap">
+                                <button name="action_test_webhook_connection" type="object" string="Test Webhook" class="btn-secondary" icon="fa-plug"/>
+                                <button name="action_test_sync_api" type="object" string="Test Sync API (Chat)" class="btn-primary" icon="fa-comment"/>
+                            </div>
+                            <div class="text-muted mt8">
+                                <p><strong>Test Webhook:</strong> 测试 Webhook URL 是否可达</p>
+                                <p><strong>Test Sync API:</strong> 打开弹窗发送自定义消息测试 AI 回复</p>
+                            </div>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Menu action to start chatting with AstrBot (accessible from Discuss menu) -->
+    <record id="action_open_astrbot_chat" model="ir.actions.server">
+        <field name="name">Chat with AstrBot</field>
+        <field name="model_id" ref="base.model_res_users"/>
+        <field name="binding_model_id" eval="False"/>
+        <field name="state">code</field>
+        <field name="code">
+env['res.config.settings'].ensure_astrbot_user_exists()
+bot_user = env['res.config.settings'].get_astrbot_bot_user()
+if bot_user:
+    bot_partner = bot_user.partner_id
+    current_partner = env.user.partner_id
+    channel = env['discuss.channel'].sudo().search([
+        ('channel_type', '=', 'chat'),
+        ('channel_member_ids.partner_id', 'in', [bot_partner.id]),
+        ('channel_member_ids.partner_id', 'in', [current_partner.id]),
+    ], limit=1)
+    if not channel:
+        channel = env['discuss.channel'].sudo().create({
+            'name': '%s, %s' % (current_partner.name, bot_partner.name),
+            'channel_type': 'chat',
+            'channel_member_ids': [
+                (0, 0, {'partner_id': current_partner.id}),
+                (0, 0, {'partner_id': bot_partner.id}),
+            ],
+        })
+    action = {
+        'type': 'ir.actions.act_url',
+        'url': '/web#action=mail.action_discuss&amp;active_id=mail.channel_%s' % channel.id,
+        'target': 'self',
+    }
+        </field>
+    </record>
+
+    <!-- Add menu item under Discuss -->
+    <menuitem id="menu_astrbot_chat"
+        name="Chat with AstrBot"
+        action="action_open_astrbot_chat"
+        parent="mail.menu_root_discuss"
+        sequence="5"
+        groups="base.group_user"/>
+</odoo>

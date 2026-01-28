@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="astrbot_test_wizard_form" model="ir.ui.view">
+        <field name="name">astrbot.test.wizard.form</field>
+        <field name="model">astrbot.test.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Test AstrBot Sync API">
+                <group invisible="state != 'draft'">
+                    <field name="message" placeholder="输入测试消息..." widget="text"/>
+                </group>
+                <group invisible="state != 'done'">
+                    <field name="message" readonly="1" widget="text" string="发送消息"/>
+                    <field name="response" widget="text"/>
+                </group>
+                <group invisible="state != 'error'">
+                    <div class="alert alert-danger" role="alert">
+                        <field name="error_message" nolabel="1"/>
+                    </div>
+                </group>
+                <field name="state" invisible="1"/>
+                <footer>
+                    <button name="action_send" string="Send" type="object" class="btn-primary" invisible="state != 'draft'" icon="fa-paper-plane"/>
+                    <button name="action_reset" string="Send Another" type="object" class="btn-primary" invisible="state == 'draft'" icon="fa-refresh"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_astrbot_test_wizard" model="ir.actions.act_window">
+        <field name="name">Test Sync API</field>
+        <field name="res_model">astrbot.test.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>
