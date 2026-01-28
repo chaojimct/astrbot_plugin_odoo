@@ -1,13 +1,6 @@
 name: astrbot_plugin_odoo
 display_name: Odoo 18 连接器
-desc: |
-  连接 AstrBot 与 Odoo 18 Discuss 模块，实现企业内部 AI 机器人功能。
-  在 Odoo Discuss 中与 AI 机器人对话
-  支持文本和图片消息
-  支持同步 API 调用（用于抖音私信等自动回复场景）
-  支持异步 Webhook 回调
-  Markdown 自动转换为 HTML 显示
-  简单配置，开箱即用
+desc: 连接 AstrBot 与 Odoo 18 Discuss 模块，实现企业内部 AI 机器人功能。
 version: v1.0.0
 author: mact
 repo: https://github.com/chaojimct/astrbot_plugin_odoo
