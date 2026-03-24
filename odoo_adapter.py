@@ -78,6 +78,9 @@ class OdooPlatformAdapter(Platform):
         # HTTP client session
         self._http_session: aiohttp.ClientSession | None = None
 
+        # Pending sync requests: message_id -> Future(reply_text)
+        self._sync_reply_futures: dict[str, asyncio.Future[str]] = {}
+
     def _clean_expired_events(self):
         """Clean events older than 30 minutes"""
         current_time = time.time()
@@ -124,6 +127,13 @@ class OdooPlatformAdapter(Platform):
             message_chain: Message chain to send
             reply_to: Original message ID being replied to
         """
+        # For sync_chat requests, capture reply directly instead of callbacking Odoo.
+        if reply_to and reply_to in self._sync_reply_futures:
+            future = self._sync_reply_futures.get(reply_to)
+            if future and not future.done():
+                future.set_result(self._extract_sync_reply_text(message_chain))
+            return
+
         # Convert message chain to Odoo format
         content = OdooMessageEvent.convert_chain_to_odoo(message_chain)
 
@@ -160,6 +170,21 @@ class OdooPlatformAdapter(Platform):
             logger.error(f"[Odoo] Network error when sending message: {e}")
         except Exception as e:
             logger.error(f"[Odoo] Error when sending message: {e}", exc_info=True)
+
+    @staticmethod
+    def _extract_sync_reply_text(message_chain: MessageChain) -> str:
+        """Flatten message chain into plain text for sync API response."""
+        content = OdooMessageEvent.convert_chain_to_odoo(message_chain)
+        parts: list[str] = []
+        for item in content:
+            item_type = item.get("type")
+            if item_type == "text":
+                text = str(item.get("data", "")).strip()
+                if text:
+                    parts.append(text)
+            elif item_type == "image":
+                parts.append("[image]")
+        return "\n".join(parts).strip()
 
     async def send_by_session(
         self,
@@ -284,14 +309,10 @@ class OdooPlatformAdapter(Platform):
             logger.debug(f"[Odoo] Unknown event type: {event_type}")
             return {"success": False, "error": f"Unknown event type: {event_type}"}
 
-    # In-memory conversation history for sync chat
-    _sync_chat_history: dict[str, list[dict]] = {}
-    _max_history_length = 20  # Max messages per session
-
     async def _handle_sync_chat(self, data: dict) -> dict:
         """Handle synchronous chat request
 
-        Processes message through LLM and returns reply immediately.
+        Processes message through AstrBot normal event pipeline and returns reply.
 
         Args:
             data: Request data with message, session_id, user_name
@@ -299,10 +320,15 @@ class OdooPlatformAdapter(Platform):
         Returns:
             Response with AI reply
         """
+        message_id = data.get("message_id", f"odoo_sync_{uuid.uuid4().hex}")
+        future: asyncio.Future[str] | None = None
         try:
             message = data.get("message", "").strip()
             session_id = data.get("session_id", "odoo_sync")
             user_name = data.get("user_name", "Odoo User")
+            user_id = data.get("user_id", f"odoo_sync_user_{session_id}")
+            timeout = int(data.get("timeout", 60) or 60)
+            timeout = max(5, min(timeout, 180))
 
             if not message:
                 return {"success": False, "error": "Message is required"}
@@ -311,68 +337,30 @@ class OdooPlatformAdapter(Platform):
                 f"[Odoo] Sync chat: user={user_name}, session={session_id}, message={message[:50]}..."
             )
 
-            # Get LLM provider from plugin's stored reference
-            from .main import get_provider_manager
+            # Build a standard message event so AstrBot full pipeline is applied:
+            # provider selection, persona, plugins, knowledge base, etc.
+            event_payload = {
+                "message_id": message_id,
+                "content": message,
+                "user_id": user_id,
+                "user_name": user_name,
+                "session_id": session_id,
+                "message_type": data.get("message_type", "private"),
+                "timestamp": int(time.time()),
+            }
 
-            provider_manager = get_provider_manager()
+            abm = await self.convert_message(event_payload)
+            if not abm:
+                return {"success": False, "error": "Failed to parse sync message"}
 
-            if not provider_manager:
-                return {
-                    "success": False,
-                    "error": "Provider manager not available (plugin not initialized)",
-                }
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            self._sync_reply_futures[message_id] = future
 
-            # Get default provider (Chat Completion type)
-            from astrbot.core.provider.entities import ProviderType
-
-            provider = provider_manager.get_using_provider(
-                provider_type=ProviderType.CHAT_COMPLETION
-            )
-            if not provider:
-                return {"success": False, "error": "No LLM provider configured"}
-
-            # Get or create conversation history for this session
-            full_session_id = f"odoo_sync_{session_id}"
-
-            if full_session_id not in self._sync_chat_history:
-                self._sync_chat_history[full_session_id] = []
-
-            history = self._sync_chat_history[full_session_id]
-
-            # Add user message to history
-            history.append({"role": "user", "content": message})
-
-            # Trim history if too long
-            if len(history) > self._max_history_length:
-                history = history[-self._max_history_length :]
-                self._sync_chat_history[full_session_id] = history
-
-            # Build context (exclude last message which is the current prompt)
-            contexts = history[:-1] if len(history) > 1 else []
-
-            # Call LLM
-            response = await provider.text_chat(
-                prompt=message,
-                session_id=full_session_id,
-                contexts=contexts,
-            )
-
-            # Extract reply
-            if hasattr(response, "completion_text"):
-                reply = response.completion_text
-            elif isinstance(response, str):
-                reply = response
-            else:
-                reply = str(response)
-
-            # Add assistant reply to history
-            history.append({"role": "assistant", "content": reply})
-
-            # Trim again after adding reply
-            if len(history) > self._max_history_length:
-                self._sync_chat_history[full_session_id] = history[
-                    -self._max_history_length :
-                ]
+            await self.handle_message(abm)
+            reply = await asyncio.wait_for(future, timeout=timeout)
+            if not reply:
+                return {"success": False, "error": "Empty reply from AstrBot pipeline"}
 
             logger.debug(f"[Odoo] Sync chat reply: {reply[:100]}...")
 
@@ -382,9 +370,19 @@ class OdooPlatformAdapter(Platform):
                 "session_id": session_id,
             }
 
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[Odoo] Sync chat timeout: session={data.get('session_id', 'odoo_sync')}, "
+                f"message_id={message_id}"
+            )
+            return {"success": False, "error": "Sync chat timeout"}
         except Exception as e:
             logger.error(f"[Odoo] Sync chat error: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+        finally:
+            if future and not future.done():
+                future.cancel()
+            self._sync_reply_futures.pop(message_id, None)
 
     async def webhook_callback(self, request: Any) -> Any:
         """Unified webhook callback entry point
